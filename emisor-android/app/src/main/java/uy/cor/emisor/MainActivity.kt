@@ -14,8 +14,8 @@ import android.widget.EditText
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.result.contracts.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -33,26 +33,17 @@ class MainActivity : AppCompatActivity() {
     private var busIds: List<String> = emptyList()
     private var running = false
 
+    companion object {
+        private const val REQ_FOREGROUND = 100
+        private const val REQ_BACKGROUND = 101
+    }
+
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val text = intent?.getStringExtra(LocationService.EXTRA_STATUS_TEXT) ?: return
             tvStatus.text = text
         }
     }
-
-    // Permisos de primer paso: ubicación fina (+ notificaciones en Android 13+)
-    private val requestForeground = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { result ->
-        val fine = result[Manifest.permission.ACCESS_FINE_LOCATION] ?: hasFine()
-        if (fine) requestBackgroundThenStart()
-        else toast("Sin permiso de ubicación no se puede transmitir.")
-    }
-
-    // Segundo paso: ubicación en segundo plano ("Permitir todo el tiempo")
-    private val requestBackground = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { _ -> actuallyStart() } // arranca aunque lo nieguen (funciona con la app abierta)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -126,7 +117,6 @@ class MainActivity : AppCompatActivity() {
                     val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels)
                     adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
                     spinner.adapter = adapter
-                    // reseleccionar el último bus usado
                     val last = prefs.getString("busId", null)
                     val idx = ids.indexOf(last)
                     if (idx >= 0) spinner.setSelection(idx)
@@ -144,7 +134,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun startTracking() {
         if (busIds.isEmpty()) { toast("Primero cargá la lista de ómnibus."); return }
-        // Paso 1: ubicación fina + notificaciones
         val need = ArrayList<String>()
         if (!hasFine()) need.add(Manifest.permission.ACCESS_FINE_LOCATION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -152,8 +141,24 @@ class MainActivity : AppCompatActivity() {
             != PackageManager.PERMISSION_GRANTED
         ) need.add(Manifest.permission.POST_NOTIFICATIONS)
 
-        if (need.isNotEmpty()) requestForeground.launch(need.toTypedArray())
-        else requestBackgroundThenStart()
+        if (need.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, need.toTypedArray(), REQ_FOREGROUND)
+        } else {
+            requestBackgroundThenStart()
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        when (requestCode) {
+            REQ_FOREGROUND -> {
+                if (hasFine()) requestBackgroundThenStart()
+                else toast("Sin permiso de ubicación no se puede transmitir.")
+            }
+            REQ_BACKGROUND -> actuallyStart() // arranca aunque lo nieguen (funciona con la app abierta)
+        }
     }
 
     private fun requestBackgroundThenStart() {
@@ -162,7 +167,9 @@ class MainActivity : AppCompatActivity() {
             != PackageManager.PERMISSION_GRANTED
         ) {
             toast("Elegí \"Permitir todo el tiempo\" para que transmita en segundo plano.")
-            requestBackground.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQ_BACKGROUND
+            )
         } else actuallyStart()
     }
 
